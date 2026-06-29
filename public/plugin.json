@@ -1,7 +1,7 @@
 {
   "main": "index.html",
   "preload": "preload/services.js",
-  "logo": "logo.png",
+  "logo": "logo1.png",
   "development": {
     "main": "http://localhost:5173"
   },
