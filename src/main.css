@@ -150,6 +150,7 @@ textarea {
   width: 100%;
   height: 100%;
   min-height: 0;
+  flex: 1;
   resize: none;
   border: 0;
   outline: none;
@@ -160,6 +161,99 @@ textarea {
   font-size: 13px;
   line-height: 1.55;
   tab-size: 2;
+}
+
+.history-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border-top: 1px solid #dce3ec;
+  background: #f8fafc;
+}
+
+.history-bar span {
+  color: #6d7a8d;
+  font-size: 12px;
+}
+
+.history-panel {
+  flex: 0 0 190px;
+  min-height: 150px;
+  border-top: 1px solid #dce3ec;
+  background: #fff;
+  overflow: hidden;
+}
+
+.history-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 42px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #e1e7ee;
+}
+
+.history-panel-header strong {
+  font-size: 13px;
+}
+
+.history-panel-header button {
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 148px;
+  overflow: auto;
+}
+
+.history-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+  height: auto;
+  min-height: 52px;
+  padding: 8px 12px;
+  border: 0;
+  border-bottom: 1px solid #eef2f6;
+  border-radius: 0;
+  background: #fff;
+  color: #18202f;
+  text-align: left;
+}
+
+.history-item:hover:not(:disabled) {
+  background: #eef5f8;
+}
+
+.history-item span,
+.history-item small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-item span {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.history-item small {
+  color: #6d7a8d;
+  font-size: 11px;
+}
+
+.history-empty {
+  padding: 14px 12px;
+  color: #647386;
+  font-size: 12px;
 }
 
 .viewer-header {

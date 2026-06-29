@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 const SAMPLE_XML = `<catalog>
   <book id="bk101" genre="fiction">
@@ -22,6 +22,8 @@ const NODE_TYPES = {
 
 const INDENT = '    '
 const PLUGIN_EXPAND_HEIGHT = 760
+const HISTORY_STORAGE_KEY = 'xml-format-history'
+const MAX_HISTORY_ITEMS = 20
 
 function parseXml (value) {
   const source = value.trim()
@@ -41,6 +43,44 @@ function parseXml (value) {
   }
 
   return { doc, error: '' }
+}
+
+function readHistory () {
+  try {
+    const value = window.localStorage?.getItem(HISTORY_STORAGE_KEY)
+    const parsed = value ? JSON.parse(value) : []
+
+    return Array.isArray(parsed)
+      ? parsed.filter((item) => typeof item?.content === 'string')
+      : []
+  } catch {
+    return []
+  }
+}
+
+function writeHistory (items) {
+  try {
+    window.localStorage?.setItem(HISTORY_STORAGE_KEY, JSON.stringify(items))
+  } catch {
+  }
+}
+
+function getHistoryTitle (value) {
+  const parsed = parseXml(value)
+
+  if (parsed.doc?.documentElement) {
+    return `<${parsed.doc.documentElement.nodeName}>`
+  }
+
+  return value.trim().slice(0, 36) || 'XML 片段'
+}
+
+function formatHistoryTime (timestamp) {
+  return new Intl.DateTimeFormat('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  }).format(timestamp)
 }
 
 function formatXml (value) {
@@ -291,6 +331,29 @@ export default function App () {
   const [query, setQuery] = useState('')
   const [collapsed, setCollapsed] = useState(new Set())
   const [copied, setCopied] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [historyItems, setHistoryItems] = useState(readHistory)
+  const hasEditedRef = useRef(false)
+
+  const saveHistory = useCallback((value) => {
+    const content = value.trim()
+    if (!content) return
+
+    setHistoryItems((current) => {
+      const next = [
+        {
+          id: `${Date.now()}-${content.length}`,
+          title: getHistoryTitle(content),
+          content,
+          createdAt: Date.now()
+        },
+        ...current.filter((item) => item.content.trim() !== content)
+      ].slice(0, MAX_HISTORY_ITEMS)
+
+      writeHistory(next)
+      return next
+    })
+  }, [])
 
   useEffect(() => {
     if (!window.utools) return
@@ -300,11 +363,19 @@ export default function App () {
     window.utools.onPluginEnter((action) => {
       if (typeof action.payload === 'string') {
         setInput(action.payload)
+        saveHistory(action.payload)
       }
 
       window.utools.setExpendHeight(PLUGIN_EXPAND_HEIGHT)
     })
-  }, [])
+  }, [saveHistory])
+
+  useEffect(() => {
+    if (!hasEditedRef.current) return
+
+    const timer = window.setTimeout(() => saveHistory(input), 700)
+    return () => window.clearTimeout(timer)
+  }, [input, saveHistory])
 
   const parsed = useMemo(() => parseXml(input), [input])
   const formatted = useMemo(() => (parsed.error ? '' : formatXml(input)), [input, parsed.error])
@@ -336,6 +407,21 @@ export default function App () {
   const handleClear = () => {
     setInput('')
     setCollapsed(new Set())
+  }
+
+  const handleInputChange = (event) => {
+    hasEditedRef.current = true
+    setInput(event.target.value)
+  }
+
+  const handleRestoreHistory = (item) => {
+    setInput(item.content)
+    setCollapsed(new Set())
+  }
+
+  const handleClearHistory = () => {
+    setHistoryItems([])
+    writeHistory([])
   }
 
   const handleToggle = (path) => {
@@ -383,9 +469,39 @@ export default function App () {
           <textarea
             spellCheck='false'
             value={input}
-            onChange={(event) => setInput(event.target.value)}
+            onChange={handleInputChange}
             placeholder='在这里粘贴 XML...'
           />
+          <div className='history-bar'>
+            <button className='ghost-button' onClick={() => setHistoryOpen((value) => !value)}>
+              历史
+            </button>
+            <span>{historyItems.length ? `${historyItems.length} 条记录` : '暂无历史'}</span>
+          </div>
+          {historyOpen && (
+            <div className='history-panel'>
+              <div className='history-panel-header'>
+                <strong>历史记录</strong>
+                <button className='ghost-button' onClick={handleClearHistory} disabled={!historyItems.length}>清空</button>
+              </div>
+              {historyItems.length > 0 && (
+                <div className='history-list'>
+                  {historyItems.map((item) => (
+                    <button
+                      className='history-item'
+                      key={item.id}
+                      onClick={() => handleRestoreHistory(item)}
+                      title='恢复这条 XML'
+                    >
+                      <span>{item.title}</span>
+                      <small>{formatHistoryTime(item.createdAt)} · {item.content.length.toLocaleString()} 字符</small>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {historyItems.length === 0 && <div className='history-empty'>输入或粘贴 XML 后会自动记录</div>}
+            </div>
+          )}
         </div>
 
         <div className='viewer-panel'>
