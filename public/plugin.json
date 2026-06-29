@@ -1,0 +1,20 @@
+{
+  "main": "index.html",
+  "preload": "preload/services.js",
+  "logo": "logo.png",
+  "development": {
+    "main": "http://localhost:5173"
+  },
+  "features": [
+    {
+      "code": "xml-format",
+      "explain": "XML 格式化、折叠和搜索工具",
+      "cmds": [
+        "xml",
+        "XML 格式化",
+        "xml格式化",
+        "格式化xml"
+      ]
+    }
+  ]
+}
