@@ -65,6 +65,12 @@ function writeHistory (items) {
   }
 }
 
+function getHistorySignature (value) {
+  const formatted = formatXml(value)
+
+  return formatted || value.trim()
+}
+
 function getHistoryTitle (value) {
   const parsed = parseXml(value)
 
@@ -334,10 +340,12 @@ export default function App () {
   const [historyOpen, setHistoryOpen] = useState(false)
   const [historyItems, setHistoryItems] = useState(readHistory)
   const hasEditedRef = useRef(false)
+  const skipNextSaveRef = useRef(false)
 
   const saveHistory = useCallback((value) => {
     const content = value.trim()
     if (!content) return
+    const signature = getHistorySignature(content)
 
     setHistoryItems((current) => {
       const next = [
@@ -345,9 +353,10 @@ export default function App () {
           id: `${Date.now()}-${content.length}`,
           title: getHistoryTitle(content),
           content,
+          signature,
           createdAt: Date.now()
         },
-        ...current.filter((item) => item.content.trim() !== content)
+        ...current.filter((item) => (item.signature || getHistorySignature(item.content)) !== signature)
       ].slice(0, MAX_HISTORY_ITEMS)
 
       writeHistory(next)
@@ -372,6 +381,11 @@ export default function App () {
 
   useEffect(() => {
     if (!hasEditedRef.current) return
+
+    if (skipNextSaveRef.current) {
+      skipNextSaveRef.current = false
+      return
+    }
 
     const timer = window.setTimeout(() => saveHistory(input), 700)
     return () => window.clearTimeout(timer)
@@ -415,8 +429,17 @@ export default function App () {
   }
 
   const handleRestoreHistory = (item) => {
+    skipNextSaveRef.current = item.content !== input
     setInput(item.content)
     setCollapsed(new Set())
+  }
+
+  const handleDeleteHistory = (id) => {
+    setHistoryItems((current) => {
+      const next = current.filter((item) => item.id !== id)
+      writeHistory(next)
+      return next
+    })
   }
 
   const handleClearHistory = () => {
@@ -487,15 +510,27 @@ export default function App () {
               {historyItems.length > 0 && (
                 <div className='history-list'>
                   {historyItems.map((item) => (
-                    <button
+                    <div
                       className='history-item'
                       key={item.id}
-                      onClick={() => handleRestoreHistory(item)}
-                      title='恢复这条 XML'
                     >
-                      <span>{item.title}</span>
-                      <small>{formatHistoryTime(item.createdAt)} · {item.content.length.toLocaleString()} 字符</small>
-                    </button>
+                      <button
+                        className='history-restore'
+                        onClick={() => handleRestoreHistory(item)}
+                        title='恢复这条 XML'
+                      >
+                        <span>{item.title}</span>
+                        <small>{formatHistoryTime(item.createdAt)} · {item.content.length.toLocaleString()} 字符</small>
+                      </button>
+                      <button
+                        className='history-delete'
+                        onClick={() => handleDeleteHistory(item.id)}
+                        title='删除这条历史'
+                        aria-label={`删除 ${item.title}`}
+                      >
+                        ×
+                      </button>
+                    </div>
                   ))}
                 </div>
               )}
