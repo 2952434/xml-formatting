@@ -343,10 +343,10 @@ textarea {
 
 .search-box {
   display: grid;
-  grid-template-columns: minmax(170px, 1fr) auto;
+  grid-template-columns: minmax(140px, 1fr) auto auto;
   align-items: center;
   gap: 8px;
-  min-width: 260px;
+  min-width: 310px;
   height: 34px;
   padding: 0 10px;
   border: 1px solid #ced8e4;
@@ -360,6 +360,31 @@ textarea {
   border: 0;
   outline: none;
   color: #18202f;
+}
+
+.search-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.search-nav button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-color: #cfd8e3;
+  border-radius: 5px;
+  padding: 0;
+  background: #f8fafc;
+  color: #253244;
+  font-size: 13px;
+}
+
+.search-nav button:hover:not(:disabled) {
+  border-color: #aebdcb;
+  background: #edf3f8;
 }
 
 .tree-actions {
@@ -425,6 +450,12 @@ textarea {
 .xml-node.is-match > .xml-row,
 .xml-row.is-match {
   background: #fff4cf;
+}
+
+.xml-node.is-match > .xml-row.is-active-match,
+.xml-row.is-active-match {
+  outline: 2px solid #e0a91c;
+  background: #ffe18a;
 }
 
 .fold-button {

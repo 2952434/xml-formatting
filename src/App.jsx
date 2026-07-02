@@ -164,7 +164,11 @@ function nodeText (node) {
     const attrs = Array.from(node.attributes)
       .map((attr) => `${attr.name}="${attr.value}"`)
       .join(' ')
-    return `${node.nodeName} ${attrs} ${node.textContent}`.toLowerCase()
+    const inlineText = isInlineElement(node)
+      ? getElementChildren(node)[0].textContent.trim()
+      : ''
+
+    return `${node.nodeName} ${attrs} ${inlineText}`.toLowerCase()
   }
 
   return node.textContent.toLowerCase()
@@ -180,23 +184,28 @@ function getElementChildren (node) {
   })
 }
 
-function collectMatches (node, query, path = '0', matches = new Set(), ancestors = new Set()) {
-  if (!query) return { matches, ancestors }
+function collectMatches (node, query, path = '0', matches = new Set(), ancestors = new Set(), matchPaths = []) {
+  if (!query) return { matches, ancestors, matchPaths }
 
   const lowerQuery = query.toLowerCase()
 
   if (nodeText(node).includes(lowerQuery)) {
     matches.add(path)
+    matchPaths.push(path)
     path.split('.').slice(0, -1).forEach((_, index, parts) => {
       ancestors.add(parts.slice(0, index + 1).join('.'))
     })
   }
 
+  if (isInlineElement(node)) {
+    return { matches, ancestors, matchPaths }
+  }
+
   getElementChildren(node).forEach((child, index) => {
-    collectMatches(child, query, `${path}.${index}`, matches, ancestors)
+    collectMatches(child, query, `${path}.${index}`, matches, ancestors, matchPaths)
   })
 
-  return { matches, ancestors }
+  return { matches, ancestors, matchPaths }
 }
 
 function highlight (value, query) {
@@ -242,12 +251,14 @@ function XmlElementName ({ node, query }) {
   )
 }
 
-function XmlNode ({ node, path, collapsed, matches, expandedBySearch, query, onToggle }) {
+function XmlNode ({ node, path, collapsed, matches, activeMatchPath, expandedBySearch, query, onToggle }) {
   const children = getElementChildren(node)
   const isElement = node.nodeType === NODE_TYPES.element
   const canCollapse = canCollapseNode(node)
   const isCollapsed = collapsed.has(path) && !expandedBySearch.has(path)
   const isMatched = matches.has(path)
+  const isActiveMatch = path === activeMatchPath
+  const rowClassName = `xml-row xml-leaf ${isMatched ? 'is-match' : ''} ${isActiveMatch ? 'is-active-match' : ''}`
 
   if (!isElement) {
     const prefix = node.nodeType === NODE_TYPES.cdata
@@ -258,7 +269,7 @@ function XmlNode ({ node, path, collapsed, matches, expandedBySearch, query, onT
       : node.nodeType === NODE_TYPES.comment ? '-->' : ''
 
     return (
-      <div className={`xml-row xml-leaf ${isMatched ? 'is-match' : ''}`}>
+      <div className={rowClassName} data-node-path={path}>
         <span className='xml-spacer' />
         <span className='xml-text'>{prefix}{highlight(node.textContent.trim(), query)}{suffix}</span>
       </div>
@@ -267,7 +278,7 @@ function XmlNode ({ node, path, collapsed, matches, expandedBySearch, query, onT
 
   if (children.length === 0) {
     return (
-      <div className={`xml-row xml-leaf ${isMatched ? 'is-match' : ''}`}>
+      <div className={rowClassName} data-node-path={path}>
         <span className='xml-spacer' />
         <span className='xml-tag'>&lt;{highlight(node.nodeName, query)}</span>
         {Array.from(node.attributes).map((attr) => (
@@ -282,7 +293,7 @@ function XmlNode ({ node, path, collapsed, matches, expandedBySearch, query, onT
 
   if (isInlineElement(node)) {
     return (
-      <div className={`xml-row xml-leaf ${isMatched ? 'is-match' : ''}`}>
+      <div className={rowClassName} data-node-path={path}>
         <span className='xml-spacer' />
         <XmlElementName node={node} query={query} />
         <span className='xml-text'>{highlight(children[0].textContent.trim(), query)}</span>
@@ -293,7 +304,7 @@ function XmlNode ({ node, path, collapsed, matches, expandedBySearch, query, onT
 
   return (
     <div className={`xml-node ${isMatched ? 'is-match' : ''}`}>
-      <div className='xml-row'>
+      <div className={`xml-row ${isActiveMatch ? 'is-active-match' : ''}`} data-node-path={path}>
         <button
           className='fold-button'
           disabled={!canCollapse}
@@ -316,6 +327,7 @@ function XmlNode ({ node, path, collapsed, matches, expandedBySearch, query, onT
                 path={`${path}.${index}`}
                 collapsed={collapsed}
                 matches={matches}
+                activeMatchPath={activeMatchPath}
                 expandedBySearch={expandedBySearch}
                 query={query}
                 onToggle={onToggle}
@@ -335,12 +347,14 @@ function XmlNode ({ node, path, collapsed, matches, expandedBySearch, query, onT
 export default function App () {
   const [input, setInput] = useState(SAMPLE_XML)
   const [query, setQuery] = useState('')
+  const [activeMatchIndex, setActiveMatchIndex] = useState(-1)
   const [collapsed, setCollapsed] = useState(new Set())
   const [copied, setCopied] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [historyItems, setHistoryItems] = useState(readHistory)
   const hasEditedRef = useRef(false)
   const skipNextSaveRef = useRef(false)
+  const viewerBodyRef = useRef(null)
 
   const saveHistory = useCallback((value) => {
     const content = value.trim()
@@ -395,11 +409,24 @@ export default function App () {
   const formatted = useMemo(() => (parsed.error ? '' : formatXml(input)), [input, parsed.error])
   const search = useMemo(() => {
     if (!parsed.doc?.documentElement || !query.trim()) {
-      return { matches: new Set(), ancestors: new Set() }
+      return { matches: new Set(), ancestors: new Set(), matchPaths: [] }
     }
 
     return collectMatches(parsed.doc.documentElement, query.trim())
   }, [parsed.doc, query])
+  const activeMatchPath = search.matchPaths[activeMatchIndex] || ''
+
+  useEffect(() => {
+    setActiveMatchIndex(query.trim() && search.matchPaths.length ? 0 : -1)
+  }, [query, search.matchPaths.length])
+
+  useEffect(() => {
+    if (!activeMatchPath) return
+
+    viewerBodyRef.current
+      ?.querySelector(`[data-node-path="${activeMatchPath}"]`)
+      ?.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' })
+  }, [activeMatchPath])
 
   const stats = useMemo(() => {
     if (!parsed.doc?.documentElement) return { nodes: 0, attributes: 0 }
@@ -420,6 +447,7 @@ export default function App () {
 
   const handleClear = () => {
     setInput('')
+    setQuery('')
     setCollapsed(new Set())
   }
 
@@ -431,6 +459,7 @@ export default function App () {
   const handleRestoreHistory = (item) => {
     skipNextSaveRef.current = item.content !== input
     setInput(item.content)
+    setQuery('')
     setCollapsed(new Set())
   }
 
@@ -460,6 +489,22 @@ export default function App () {
   }
 
   const handleExpandAll = () => setCollapsed(new Set())
+
+  const moveSearch = (direction) => {
+    if (!search.matchPaths.length) return
+
+    setActiveMatchIndex((current) => {
+      const start = current < 0 ? 0 : current
+      return (start + direction + search.matchPaths.length) % search.matchPaths.length
+    })
+  }
+
+  const handleSearchKeyDown = (event) => {
+    if (event.key !== 'Enter') return
+
+    event.preventDefault()
+    moveSearch(event.shiftKey ? -1 : 1)
+  }
 
   const handleCollapseAll = () => {
     if (!parsed.doc?.documentElement) return
@@ -551,9 +596,30 @@ export default function App () {
                 <input
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={handleSearchKeyDown}
                   placeholder='搜索标签、属性、文本'
                 />
-                <span>{query.trim() ? `${search.matches.size} 处` : '搜索'}</span>
+                <span>{query.trim() ? `${search.matches.size ? activeMatchIndex + 1 : 0}/${search.matches.size}` : '搜索'}</span>
+                <div className='search-nav'>
+                  <button
+                    type='button'
+                    onClick={() => moveSearch(-1)}
+                    disabled={!search.matchPaths.length}
+                    title='上一个匹配项'
+                    aria-label='上一个匹配项'
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type='button'
+                    onClick={() => moveSearch(1)}
+                    disabled={!search.matchPaths.length}
+                    title='下一个匹配项'
+                    aria-label='下一个匹配项'
+                  >
+                    ↓
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -563,7 +629,7 @@ export default function App () {
             <button className='ghost-button' onClick={handleCollapseAll} disabled={!parsed.doc}>全部折叠</button>
           </div>
 
-          <div className='viewer-body'>
+          <div className='viewer-body' ref={viewerBodyRef}>
             {parsed.error && <div className='error-box'>{parsed.error}</div>}
             {!parsed.error && parsed.doc?.documentElement && (
               <div className='xml-tree'>
@@ -572,6 +638,7 @@ export default function App () {
                   path='0'
                   collapsed={collapsed}
                   matches={search.matches}
+                  activeMatchPath={activeMatchPath}
                   expandedBySearch={search.ancestors}
                   query={query.trim()}
                   onToggle={handleToggle}
