@@ -1,4 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import XmlTree from './XmlTree.jsx'
+import {
+  DEFAULT_FORMAT_OPTIONS,
+  INDENT_UNITS,
+  canCollapseNode,
+  collectMatches,
+  formatXml,
+  getHistorySignature,
+  getStats,
+  getSuggestedFileName,
+  getTreeChildren,
+  getXmlTitle,
+  jsonToXml,
+  parseXml,
+  xmlToJson
+} from './xml.js'
 
 const SAMPLE_XML = `<catalog>
   <book id="bk101" genre="fiction">
@@ -13,36 +29,49 @@ const SAMPLE_XML = `<catalog>
   </book>
 </catalog>`
 
-const NODE_TYPES = {
-  element: 1,
-  text: 3,
-  cdata: 4,
-  comment: 8
-}
-
-const INDENT = '    '
 const PLUGIN_EXPAND_HEIGHT = 760
 const HISTORY_STORAGE_KEY = 'xml-format-history'
+const OPTIONS_STORAGE_KEY = 'xml-format-options'
 const MAX_HISTORY_ITEMS = 20
+const FILE_EXTENSIONS = ['xml', 'xsd', 'xsl', 'xslt', 'svg', 'rss', 'plist', 'txt']
+const ACCEPT_EXTENSIONS = FILE_EXTENSIONS.map((ext) => `.${ext}`).join(',')
+const VIEW_MODES = [
+  { key: 'tree', label: '树视图' },
+  { key: 'source', label: '源码' },
+  { key: 'json', label: 'JSON' }
+]
 
-function parseXml (value) {
-  const source = value.trim()
+function isUtoolsReady () {
+  return Boolean(window.utools)
+}
 
-  if (!source) {
-    return { doc: null, error: '' }
-  }
+function baseName (filePath) {
+  return String(filePath).split(/[\\/]/).pop() || ''
+}
 
-  const doc = new window.DOMParser().parseFromString(source, 'application/xml')
-  const parserError = doc.querySelector('parsererror')
+function readOptions () {
+  try {
+    const raw = window.localStorage?.getItem(OPTIONS_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : null
 
-  if (parserError) {
+    if (!parsed || typeof parsed !== 'object') return { ...DEFAULT_FORMAT_OPTIONS }
+
     return {
-      doc: null,
-      error: parserError.textContent.replace(/\s+/g, ' ').trim()
+      indent: INDENT_UNITS[parsed.indent] ? String(parsed.indent) : DEFAULT_FORMAT_OPTIONS.indent,
+      sortAttributes: Boolean(parsed.sortAttributes),
+      minify: Boolean(parsed.minify)
     }
+  } catch {
+    return { ...DEFAULT_FORMAT_OPTIONS }
   }
+}
 
-  return { doc, error: '' }
+function writeOptions (options) {
+  try {
+    window.localStorage?.setItem(OPTIONS_STORAGE_KEY, JSON.stringify(options))
+  } catch {
+    // 选项写入失败只影响下次启动的默认值，不打断当前使用
+  }
 }
 
 function readHistory () {
@@ -61,24 +90,30 @@ function readHistory () {
 function writeHistory (items) {
   try {
     window.localStorage?.setItem(HISTORY_STORAGE_KEY, JSON.stringify(items))
+    return true
   } catch {
+    return false
   }
 }
 
-function getHistorySignature (value) {
-  const formatted = formatXml(value)
+/**
+ * 写入历史记录。localStorage 容量有限（约 5MB），
+ * 写入失败时逐级丢弃较旧的记录重试，并把原因回传给界面提示。
+ */
+function persistHistory (items) {
+  if (writeHistory(items)) return { items, warning: '' }
 
-  return formatted || value.trim()
-}
+  let kept = items.slice(0, Math.max(1, Math.floor(items.length / 2)))
 
-function getHistoryTitle (value) {
-  const parsed = parseXml(value)
-
-  if (parsed.doc?.documentElement) {
-    return `<${parsed.doc.documentElement.nodeName}>`
+  while (kept.length > 1 && !writeHistory(kept)) {
+    kept = kept.slice(0, Math.max(1, Math.floor(kept.length / 2)))
   }
 
-  return value.trim().slice(0, 36) || 'XML 片段'
+  if (writeHistory(kept)) {
+    return { items: kept, warning: '本地存储空间不足，已自动清理较旧的历史记录' }
+  }
+
+  return { items: kept, warning: '本地存储空间不足，历史记录仅在本次会话中保留，关闭后会丢失' }
 }
 
 function formatHistoryTime (timestamp) {
@@ -89,309 +124,223 @@ function formatHistoryTime (timestamp) {
   }).format(timestamp)
 }
 
-function formatXml (value) {
-  const source = value.trim()
+async function copyText (text) {
+  if (!text) return false
 
-  if (!source) return ''
-
-  const parsed = parseXml(source)
-  if (parsed.error || !parsed.doc?.documentElement) return ''
-
-  const declaration = source.match(/^<\?xml[^?]*\?>/)?.[0]
-  const doctype = formatDoctype(parsed.doc.doctype)
-  const root = formatXmlNode(parsed.doc.documentElement)
-
-  return [declaration, doctype, root].filter(Boolean).join('\n')
-}
-
-function formatDoctype (doctype) {
-  if (!doctype) return ''
-
-  const publicId = doctype.publicId ? ` PUBLIC "${doctype.publicId}"` : ''
-  const systemId = doctype.systemId ? ` "${doctype.systemId}"` : ''
-
-  return `<!DOCTYPE ${doctype.name}${publicId}${systemId}>`
-}
-
-function formatXmlNode (node, level = 0) {
-  const indent = INDENT.repeat(level)
-
-  if (node.nodeType === NODE_TYPES.text) {
-    return `${indent}${escapeText(node.textContent.trim())}`
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      // 无剪贴板权限或页面未聚焦时回落到 execCommand
+    }
   }
 
-  if (node.nodeType === NODE_TYPES.cdata) {
-    return `${indent}<![CDATA[${node.textContent}]]>`
+  try {
+    const area = document.createElement('textarea')
+    area.value = text
+    area.setAttribute('readonly', '')
+    area.style.position = 'fixed'
+    area.style.top = '-1000px'
+    area.style.opacity = '0'
+    document.body.appendChild(area)
+    area.select()
+    const succeeded = document.execCommand('copy')
+    document.body.removeChild(area)
+
+    return succeeded
+  } catch {
+    return false
   }
-
-  if (node.nodeType === NODE_TYPES.comment) {
-    return `${indent}<!--${node.textContent}-->`
-  }
-
-  const attrs = Array.from(node.attributes)
-    .map((attr) => ` ${attr.name}="${escapeAttr(attr.value)}"`)
-    .join('')
-  const children = getElementChildren(node)
-
-  if (children.length === 0) {
-    return `${indent}<${node.nodeName}${attrs}/>`
-  }
-
-  if (children.length === 1 && children[0].nodeType === NODE_TYPES.text) {
-    return `${indent}<${node.nodeName}${attrs}>${escapeText(children[0].textContent.trim())}</${node.nodeName}>`
-  }
-
-  return [
-    `${indent}<${node.nodeName}${attrs}>`,
-    ...children.map((child) => formatXmlNode(child, level + 1)),
-    `${indent}</${node.nodeName}>`
-  ].join('\n')
 }
 
-function escapeText (value) {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-}
+function pickFileInBrowser () {
+  return new Promise((resolve) => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = ACCEPT_EXTENSIONS
+    input.style.display = 'none'
 
-function escapeAttr (value) {
-  return escapeText(value).replace(/"/g, '&quot;')
-}
-
-function nodeText (node) {
-  if (node.nodeType === NODE_TYPES.element) {
-    const attrs = Array.from(node.attributes)
-      .map((attr) => `${attr.name}="${attr.value}"`)
-      .join(' ')
-    const inlineText = isInlineElement(node)
-      ? getElementChildren(node)[0].textContent.trim()
-      : ''
-
-    return `${node.nodeName} ${attrs} ${inlineText}`.toLowerCase()
-  }
-
-  return node.textContent.toLowerCase()
-}
-
-function getElementChildren (node) {
-  return Array.from(node.childNodes).filter((child) => {
-    if (child.nodeType === NODE_TYPES.text) {
-      return child.textContent.trim()
+    const cleanup = () => {
+      if (input.parentNode) input.parentNode.removeChild(input)
     }
 
-    return child.nodeType === NODE_TYPES.element || child.nodeType === NODE_TYPES.cdata || child.nodeType === NODE_TYPES.comment
-  })
-}
+    input.addEventListener('change', () => {
+      const file = input.files?.[0]
+      cleanup()
 
-function collectMatches (node, query, path = '0', matches = new Set(), ancestors = new Set(), matchPaths = []) {
-  if (!query) return { matches, ancestors, matchPaths }
+      if (!file) {
+        resolve({ canceled: true })
+        return
+      }
 
-  const lowerQuery = query.toLowerCase()
-
-  if (nodeText(node).includes(lowerQuery)) {
-    matches.add(path)
-    matchPaths.push(path)
-    path.split('.').slice(0, -1).forEach((_, index, parts) => {
-      ancestors.add(parts.slice(0, index + 1).join('.'))
+      file.text()
+        .then((content) => resolve({ name: file.name, content }))
+        .catch((error) => resolve({ error: `读取文件失败：${error.message}` }))
     })
-  }
 
-  if (isInlineElement(node)) {
-    return { matches, ancestors, matchPaths }
-  }
+    input.addEventListener('cancel', () => {
+      cleanup()
+      resolve({ canceled: true })
+    })
 
-  getElementChildren(node).forEach((child, index) => {
-    collectMatches(child, query, `${path}.${index}`, matches, ancestors, matchPaths)
+    document.body.appendChild(input)
+    input.click()
   })
-
-  return { matches, ancestors, matchPaths }
 }
 
-function highlight (value, query) {
-  if (!query) return value
+async function openXmlFile () {
+  if (isUtoolsReady() && window.services?.readFile) {
+    const picked = window.utools.showOpenDialog({
+      title: '打开 XML 文件',
+      filters: [{ name: 'XML', extensions: FILE_EXTENSIONS }],
+      properties: ['openFile']
+    })
 
-  const lowerValue = value.toLowerCase()
-  const lowerQuery = query.toLowerCase()
-  const index = lowerValue.indexOf(lowerQuery)
+    if (!picked || !picked.length) return { canceled: true }
 
-  if (index === -1) return value
+    const filePath = picked[0]
 
-  return (
-    <>
-      {value.slice(0, index)}
-      <mark>{value.slice(index, index + query.length)}</mark>
-      {value.slice(index + query.length)}
-    </>
-  )
-}
-
-function isInlineElement (node) {
-  const children = getElementChildren(node)
-  return node.nodeType === NODE_TYPES.element && children.length === 1 && children[0].nodeType === NODE_TYPES.text
-}
-
-function canCollapseNode (node) {
-  return node.nodeType === NODE_TYPES.element && getElementChildren(node).length > 0 && !isInlineElement(node)
-}
-
-function XmlElementName ({ node, query }) {
-  const attrs = Array.from(node.attributes)
-
-  return (
-    <>
-      <span className='xml-tag'>&lt;{highlight(node.nodeName, query)}</span>
-      {attrs.map((attr) => (
-        <span className='xml-attr' key={attr.name}>
-          {' '}{highlight(attr.name, query)}=<span className='xml-value'>"{highlight(attr.value, query)}"</span>
-        </span>
-      ))}
-      <span className='xml-tag'>&gt;</span>
-    </>
-  )
-}
-
-function XmlNode ({ node, path, collapsed, matches, activeMatchPath, expandedBySearch, query, onToggle }) {
-  const children = getElementChildren(node)
-  const isElement = node.nodeType === NODE_TYPES.element
-  const canCollapse = canCollapseNode(node)
-  const isCollapsed = collapsed.has(path) && !expandedBySearch.has(path)
-  const isMatched = matches.has(path)
-  const isActiveMatch = path === activeMatchPath
-  const rowClassName = `xml-row xml-leaf ${isMatched ? 'is-match' : ''} ${isActiveMatch ? 'is-active-match' : ''}`
-
-  if (!isElement) {
-    const prefix = node.nodeType === NODE_TYPES.cdata
-      ? '<![CDATA['
-      : node.nodeType === NODE_TYPES.comment ? '<!--' : ''
-    const suffix = node.nodeType === NODE_TYPES.cdata
-      ? ']]>'
-      : node.nodeType === NODE_TYPES.comment ? '-->' : ''
-
-    return (
-      <div className={rowClassName} data-node-path={path}>
-        <span className='xml-spacer' />
-        <span className='xml-text'>{prefix}{highlight(node.textContent.trim(), query)}{suffix}</span>
-      </div>
-    )
+    try {
+      return { name: baseName(filePath), content: window.services.readFile(filePath) }
+    } catch (error) {
+      return { error: `读取文件失败：${error.message}` }
+    }
   }
 
-  if (children.length === 0) {
-    return (
-      <div className={rowClassName} data-node-path={path}>
-        <span className='xml-spacer' />
-        <span className='xml-tag'>&lt;{highlight(node.nodeName, query)}</span>
-        {Array.from(node.attributes).map((attr) => (
-          <span className='xml-attr' key={attr.name}>
-            {' '}{highlight(attr.name, query)}=<span className='xml-value'>"{highlight(attr.value, query)}"</span>
-          </span>
-        ))}
-        <span className='xml-tag'>/&gt;</span>
-      </div>
-    )
+  return pickFileInBrowser()
+}
+
+function saveTextFile (content, suggestedName) {
+  if (isUtoolsReady() && window.services?.writeFile) {
+    const target = window.utools.showSaveDialog({
+      title: '保存 XML 文件',
+      defaultPath: suggestedName,
+      filters: [{ name: 'XML', extensions: ['xml'] }]
+    })
+
+    if (!target) return { canceled: true }
+
+    try {
+      window.services.writeFile(target, content)
+      window.utools.shellShowItemInFolder(target)
+      return { name: baseName(target) }
+    } catch (error) {
+      return { error: `保存失败：${error.message}` }
+    }
   }
 
-  if (isInlineElement(node)) {
-    return (
-      <div className={rowClassName} data-node-path={path}>
-        <span className='xml-spacer' />
-        <XmlElementName node={node} query={query} />
-        <span className='xml-text'>{highlight(children[0].textContent.trim(), query)}</span>
-        <span className='xml-tag'>&lt;/{highlight(node.nodeName, query)}&gt;</span>
-      </div>
-    )
+  try {
+    const blob = new Blob([content], { type: 'application/xml;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = suggestedName
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+    return { name: suggestedName }
+  } catch (error) {
+    return { error: `保存失败：${error.message}` }
   }
-
-  return (
-    <div className={`xml-node ${isMatched ? 'is-match' : ''}`}>
-      <div className={`xml-row ${isActiveMatch ? 'is-active-match' : ''}`} data-node-path={path}>
-        <button
-          className='fold-button'
-          disabled={!canCollapse}
-          onClick={() => onToggle(path)}
-          title={canCollapse ? '折叠/展开' : '没有子节点'}
-        >
-          {canCollapse ? (isCollapsed ? '>' : 'v') : ''}
-        </button>
-        <XmlElementName node={node} query={query} />
-        {isCollapsed && <span className='xml-muted'>...</span>}
-        {isCollapsed && <span className='xml-tag'>&lt;/{node.nodeName}&gt;</span>}
-      </div>
-      {!isCollapsed && (
-        <>
-          <div className='xml-children'>
-            {children.map((child, index) => (
-              <XmlNode
-                key={`${path}.${index}`}
-                node={child}
-                path={`${path}.${index}`}
-                collapsed={collapsed}
-                matches={matches}
-                activeMatchPath={activeMatchPath}
-                expandedBySearch={expandedBySearch}
-                query={query}
-                onToggle={onToggle}
-              />
-            ))}
-          </div>
-          <div className='xml-row xml-close'>
-            <span className='xml-spacer' />
-            <span className='xml-tag'>&lt;/{highlight(node.nodeName, query)}&gt;</span>
-          </div>
-        </>
-      )}
-    </div>
-  )
 }
 
 export default function App () {
   const [input, setInput] = useState(SAMPLE_XML)
+  const [fileName, setFileName] = useState('')
   const [query, setQuery] = useState('')
   const [activeMatchIndex, setActiveMatchIndex] = useState(-1)
   const [collapsed, setCollapsed] = useState(new Set())
+  const [options, setOptions] = useState(readOptions)
+  const [viewMode, setViewMode] = useState('tree')
   const [copied, setCopied] = useState(false)
+  const [notice, setNotice] = useState('')
+  const [dragActive, setDragActive] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [historyItems, setHistoryItems] = useState(readHistory)
+  const [historyWarning, setHistoryWarning] = useState('')
   const hasEditedRef = useRef(false)
   const skipNextSaveRef = useRef(false)
+  const noticeTimerRef = useRef(0)
   const viewerBodyRef = useRef(null)
 
+  const showNotice = useCallback((message) => {
+    window.clearTimeout(noticeTimerRef.current)
+    setNotice(message)
+
+    if (message) {
+      noticeTimerRef.current = window.setTimeout(() => setNotice(''), 2600)
+    }
+  }, [])
+
+  useEffect(() => () => window.clearTimeout(noticeTimerRef.current), [])
+
+  useEffect(() => {
+    writeOptions(options)
+  }, [options])
+
+  // 统一在这里落盘历史记录，容量不足时 persistHistory 会裁剪并给出提示
+  useEffect(() => {
+    const result = persistHistory(historyItems)
+
+    setHistoryWarning(result.warning)
+
+    if (result.items !== historyItems) {
+      setHistoryItems(result.items)
+    }
+  }, [historyItems])
+
   const saveHistory = useCallback((value) => {
-    const content = value.trim()
+    const content = String(value || '').trim()
     if (!content) return
     const signature = getHistorySignature(content)
 
-    setHistoryItems((current) => {
-      const next = [
-        {
-          id: `${Date.now()}-${content.length}`,
-          title: getHistoryTitle(content),
-          content,
-          signature,
-          createdAt: Date.now()
-        },
-        ...current.filter((item) => (item.signature || getHistorySignature(item.content)) !== signature)
-      ].slice(0, MAX_HISTORY_ITEMS)
+    setHistoryItems((current) => ([
+      {
+        id: `${Date.now()}-${content.length}`,
+        title: getXmlTitle(content),
+        content,
+        signature,
+        createdAt: Date.now()
+      },
+      ...current.filter((item) => (item.signature || getHistorySignature(item.content)) !== signature)
+    ].slice(0, MAX_HISTORY_ITEMS)))
+  }, [])
 
-      writeHistory(next)
-      return next
-    })
+  const loadContent = useCallback((content, name = '') => {
+    hasEditedRef.current = true
+    skipNextSaveRef.current = false
+    setInput(content)
+    setQuery('')
+    setCollapsed(new Set())
+    setFileName(name)
   }, [])
 
   useEffect(() => {
-    if (!window.utools) return
+    if (!isUtoolsReady()) return
 
     window.utools.setExpendHeight(PLUGIN_EXPAND_HEIGHT)
 
     window.utools.onPluginEnter((action) => {
-      if (typeof action.payload === 'string') {
-        setInput(action.payload)
-        saveHistory(action.payload)
+      const payload = action?.payload
+
+      if (action?.type === 'files' && Array.isArray(payload) && payload.length) {
+        const filePath = payload[0].path || ''
+
+        try {
+          loadContent(window.services.readFile(filePath), baseName(filePath))
+        } catch (error) {
+          showNotice(`读取文件失败：${error.message}`)
+        }
+      } else if (typeof payload === 'string') {
+        setInput(payload)
+        saveHistory(payload)
       }
 
       window.utools.setExpendHeight(PLUGIN_EXPAND_HEIGHT)
     })
-  }, [saveHistory])
+  }, [loadContent, saveHistory, showNotice])
 
   useEffect(() => {
     if (!hasEditedRef.current) return
@@ -406,7 +355,25 @@ export default function App () {
   }, [input, saveHistory])
 
   const parsed = useMemo(() => parseXml(input), [input])
-  const formatted = useMemo(() => (parsed.error ? '' : formatXml(input)), [input, parsed.error])
+  const formatted = useMemo(
+    () => (parsed.error ? '' : formatXml(input, options)),
+    [input, parsed.error, options]
+  )
+  const conversion = useMemo(() => {
+    if (viewMode !== 'json') return { error: '', output: '', direction: '' }
+
+    const source = input.trim()
+    if (!source) return { error: '', output: '', direction: '' }
+
+    if (/^[[{]/.test(source)) {
+      const result = jsonToXml(source, options)
+      return { error: result.error, output: result.output, direction: 'json-to-xml' }
+    }
+
+    const result = xmlToJson(source)
+    return { error: result.error, output: result.output, direction: 'xml-to-json' }
+  }, [viewMode, input, options])
+
   const search = useMemo(() => {
     if (!parsed.doc?.documentElement || !query.trim()) {
       return { matches: new Set(), ancestors: new Set(), matchPaths: [] }
@@ -414,6 +381,7 @@ export default function App () {
 
     return collectMatches(parsed.doc.documentElement, query.trim())
   }, [parsed.doc, query])
+
   const activeMatchPath = search.matchPaths[activeMatchIndex] || ''
 
   useEffect(() => {
@@ -428,26 +396,57 @@ export default function App () {
       ?.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' })
   }, [activeMatchPath])
 
-  const stats = useMemo(() => {
-    if (!parsed.doc?.documentElement) return { nodes: 0, attributes: 0 }
+  const stats = useMemo(() => getStats(parsed.doc), [parsed.doc])
 
-    const elements = Array.from(parsed.doc.getElementsByTagName('*'))
-    return {
-      nodes: elements.length,
-      attributes: elements.reduce((total, node) => total + node.attributes.length, 0)
-    }
-  }, [parsed.doc])
+  const outputText = viewMode === 'json' ? conversion.output : formatted
+  const saveContent = formatted || (conversion.direction === 'json-to-xml' ? conversion.output : '')
 
   const handleCopy = async () => {
-    if (!formatted) return
-    await navigator.clipboard.writeText(formatted)
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 1200)
+    if (!outputText) return
+
+    if (await copyText(outputText)) {
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1200)
+      return
+    }
+
+    showNotice('复制失败，请手动选中内容后复制')
+  }
+
+  const handleOpenFile = async () => {
+    const result = await openXmlFile()
+
+    if (result.canceled) return
+
+    if (result.error) {
+      showNotice(result.error)
+      return
+    }
+
+    loadContent(result.content, result.name || '')
+    showNotice(`已打开 ${result.name || '文件'}`)
+  }
+
+  const handleSaveFile = () => {
+    if (!saveContent) return
+
+    const result = saveTextFile(saveContent, getSuggestedFileName(input))
+
+    if (result.canceled) return
+
+    if (result.error) {
+      showNotice(result.error)
+      return
+    }
+
+    showNotice(`已保存为 ${result.name}`)
   }
 
   const handleClear = () => {
+    hasEditedRef.current = false
     setInput('')
     setQuery('')
+    setFileName('')
     setCollapsed(new Set())
   }
 
@@ -460,30 +459,28 @@ export default function App () {
     skipNextSaveRef.current = item.content !== input
     setInput(item.content)
     setQuery('')
+    setFileName('')
     setCollapsed(new Set())
   }
 
   const handleDeleteHistory = (id) => {
-    setHistoryItems((current) => {
-      const next = current.filter((item) => item.id !== id)
-      writeHistory(next)
-      return next
-    })
+    setHistoryItems((current) => current.filter((item) => item.id !== id))
   }
 
   const handleClearHistory = () => {
     setHistoryItems([])
-    writeHistory([])
   }
 
   const handleToggle = (path) => {
     setCollapsed((current) => {
       const next = new Set(current)
+
       if (next.has(path)) {
         next.delete(path)
       } else {
         next.add(path)
       }
+
       return next
     })
   }
@@ -512,34 +509,84 @@ export default function App () {
     const next = new Set()
     const walk = (node, path = '0') => {
       if (canCollapseNode(node)) next.add(path)
-      getElementChildren(node).forEach((child, index) => walk(child, `${path}.${index}`))
+      getTreeChildren(node).forEach((child, index) => walk(child, `${path}.${index}`))
     }
 
     walk(parsed.doc.documentElement)
     setCollapsed(next)
   }
 
+  const handleDragOver = (event) => {
+    const types = Array.from(event.dataTransfer?.types || [])
+    if (!types.includes('Files')) return
+
+    event.preventDefault()
+    setDragActive(true)
+  }
+
+  const handleDragLeave = (event) => {
+    if (event.currentTarget.contains(event.relatedTarget)) return
+
+    setDragActive(false)
+  }
+
+  const handleDrop = async (event) => {
+    event.preventDefault()
+    setDragActive(false)
+
+    const file = event.dataTransfer?.files?.[0]
+    if (!file) return
+
+    try {
+      const content = await file.text()
+      loadContent(content, file.name)
+      showNotice(`已载入 ${file.name}`)
+    } catch (error) {
+      showNotice(`读取文件失败：${error.message}`)
+    }
+  }
+
+  const handleOptionsChange = (patch) => {
+    setOptions((current) => ({ ...current, ...patch }))
+  }
+
+  const summary = parsed.error
+    ? '解析失败，请检查 XML 结构'
+    : `${stats.nodes} 个节点，${stats.attributes} 个属性`
+
   return (
     <main className='app-shell'>
       <section className='toolbar'>
         <div>
           <h1>XML 格式化</h1>
-          <p>{parsed.error ? '解析失败，请检查 XML 结构' : `${stats.nodes} 个节点，${stats.attributes} 个属性`}</p>
+          <p>{summary}</p>
+        </div>
+        <div className='toolbar-actions'>
+          <button className='ghost-button' onClick={handleOpenFile}>打开文件</button>
+          <button className='ghost-button' onClick={handleSaveFile} disabled={!saveContent}>另存为 .xml</button>
         </div>
       </section>
 
-      <section className='workspace'>
-        <div className='editor-panel'>
+      {notice && <div className='notice-bar'>{notice}</div>}
+
+      <section
+        className='workspace'
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        <div className={`editor-panel${dragActive ? ' is-drag-active' : ''}`}>
           <div className='panel-header'>
-            <strong>输入 XML</strong>
-            <span>{input.length.toLocaleString()} 字符</span>
+            <strong>输入</strong>
+            <span>{fileName ? `${fileName} · ` : ''}{input.length.toLocaleString()} 字符</span>
           </div>
           <textarea
             spellCheck='false'
             value={input}
             onChange={handleInputChange}
-            placeholder='在这里粘贴 XML...'
+            placeholder='在这里粘贴 XML，或把 .xml 文件拖进来'
           />
+          {dragActive && <div className='drop-hint'>松开即可载入文件</div>}
           <div className='history-bar'>
             <button className='ghost-button' onClick={() => setHistoryOpen((value) => !value)}>
               历史
@@ -552,13 +599,11 @@ export default function App () {
                 <strong>历史记录</strong>
                 <button className='ghost-button' onClick={handleClearHistory} disabled={!historyItems.length}>清空</button>
               </div>
+              {historyWarning && <div className='history-warning'>{historyWarning}</div>}
               {historyItems.length > 0 && (
                 <div className='history-list'>
                   {historyItems.map((item) => (
-                    <div
-                      className='history-item'
-                      key={item.id}
-                    >
+                    <div className='history-item' key={item.id}>
                       <button
                         className='history-restore'
                         onClick={() => handleRestoreHistory(item)}
@@ -586,18 +631,71 @@ export default function App () {
 
         <div className='viewer-panel'>
           <div className='panel-header viewer-header'>
-            <strong>格式化结果</strong>
+            <div className='segmented'>
+              {VIEW_MODES.map((mode) => (
+                <button
+                  key={mode.key}
+                  type='button'
+                  className={viewMode === mode.key ? 'active' : ''}
+                  onClick={() => setViewMode(mode.key)}
+                >
+                  {mode.label}
+                </button>
+              ))}
+            </div>
             <div className='viewer-tools'>
-              <button className='copy-output-button' onClick={handleCopy} disabled={!formatted}>
+              <button className='copy-output-button' onClick={handleCopy} disabled={!outputText}>
                 {copied ? '已复制' : '复制'}
               </button>
               <button className='ghost-button' onClick={handleClear}>清空</button>
+            </div>
+          </div>
+
+          <div className='options-bar'>
+            <label>
+              缩进
+              <select
+                value={options.indent}
+                disabled={options.minify}
+                onChange={(event) => handleOptionsChange({ indent: event.target.value })}
+              >
+                <option value='2'>2 空格</option>
+                <option value='4'>4 空格</option>
+                <option value='tab'>Tab</option>
+              </select>
+            </label>
+            <label className='options-check'>
+              <input
+                type='checkbox'
+                checked={options.sortAttributes}
+                onChange={(event) => handleOptionsChange({ sortAttributes: event.target.checked })}
+              />
+              属性按名称排序
+            </label>
+            <label className='options-check'>
+              <input
+                type='checkbox'
+                checked={options.minify}
+                onChange={(event) => handleOptionsChange({ minify: event.target.checked })}
+              />
+              压缩为一行
+            </label>
+            {conversion.direction && (
+              <span className='viewer-hint'>
+                {conversion.direction === 'json-to-xml' ? '按 JSON → XML 转换' : '按 XML → JSON 转换'}
+              </span>
+            )}
+          </div>
+
+          {viewMode === 'tree' && (
+            <div className='tree-toolbar'>
               <div className='search-box'>
                 <input
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   onKeyDown={handleSearchKeyDown}
                   placeholder='搜索标签、属性、文本'
+                  disabled={!parsed.doc}
                 />
                 <span>{query.trim() ? `${search.matches.size ? activeMatchIndex + 1 : 0}/${search.matches.size}` : '搜索'}</span>
                 <div className='search-nav'>
@@ -621,31 +719,56 @@ export default function App () {
                   </button>
                 </div>
               </div>
+              <button className='ghost-button' onClick={handleExpandAll} disabled={!parsed.doc}>全部展开</button>
+              <button className='ghost-button' onClick={handleCollapseAll} disabled={!parsed.doc}>全部折叠</button>
             </div>
-          </div>
-
-          <div className='tree-actions'>
-            <button className='ghost-button' onClick={handleExpandAll} disabled={!parsed.doc}>全部展开</button>
-            <button className='ghost-button' onClick={handleCollapseAll} disabled={!parsed.doc}>全部折叠</button>
-          </div>
+          )}
 
           <div className='viewer-body' ref={viewerBodyRef}>
-            {parsed.error && <div className='error-box'>{parsed.error}</div>}
-            {!parsed.error && parsed.doc?.documentElement && (
-              <div className='xml-tree'>
-                <XmlNode
-                  node={parsed.doc.documentElement}
-                  path='0'
-                  collapsed={collapsed}
-                  matches={search.matches}
-                  activeMatchPath={activeMatchPath}
-                  expandedBySearch={search.ancestors}
-                  query={query.trim()}
-                  onToggle={handleToggle}
-                />
-              </div>
+            {viewMode === 'tree' && (
+              <>
+                {parsed.error && (
+                  <div className='error-box'>
+                    {parsed.error}
+                    {parsed.errorLine > 0 && (
+                      <div className='error-location'>约在第 {parsed.errorLine} 行，第 {parsed.errorColumn} 列</div>
+                    )}
+                  </div>
+                )}
+                {!parsed.error && parsed.doc?.documentElement && (
+                  <XmlTree
+                    root={parsed.doc.documentElement}
+                    collapsed={collapsed}
+                    matches={search.matches}
+                    activeMatchPath={activeMatchPath}
+                    expandedBySearch={search.ancestors}
+                    query={query.trim()}
+                    onToggle={handleToggle}
+                  />
+                )}
+                {!parsed.error && !input.trim() && <div className='empty-box'>等待 XML 输入</div>}
+              </>
             )}
-            {!parsed.error && !input.trim() && <div className='empty-box'>等待 XML 输入</div>}
+
+            {viewMode === 'source' && (
+              formatted
+                ? <pre className='source-view'>{formatted}</pre>
+                : (
+                  <div className={parsed.error ? 'error-box' : 'empty-box'}>
+                    {parsed.error ? '解析失败，无法生成格式化结果' : '等待 XML 输入'}
+                  </div>
+                  )
+            )}
+
+            {viewMode === 'json' && (
+              conversion.output
+                ? <pre className='source-view'>{conversion.output}</pre>
+                : (
+                  <div className={conversion.error ? 'error-box' : 'empty-box'}>
+                    {conversion.error || '输入 XML 得到 JSON，输入 JSON 得到 XML'}
+                  </div>
+                  )
+            )}
           </div>
         </div>
       </section>

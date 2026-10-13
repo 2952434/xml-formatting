@@ -7,9 +7,14 @@ window.services = {
   readFile (file) {
     return fs.readFileSync(file, { encoding: 'utf-8' })
   },
-  // 文本写入到下载目录
-  writeTextFile (text) {
-    const filePath = path.join(window.utools.getPath('downloads'), Date.now().toString() + '.txt')
+  // 文本写入到指定路径
+  writeFile (file, text) {
+    fs.writeFileSync(file, text, { encoding: 'utf-8' })
+    return file
+  },
+  // 文本写入到下载目录，可指定文件名
+  writeTextFile (text, fileName) {
+    const filePath = path.join(window.utools.getPath('downloads'), fileName || Date.now().toString() + '.txt')
     fs.writeFileSync(filePath, text, { encoding: 'utf-8' })
     return filePath
   },

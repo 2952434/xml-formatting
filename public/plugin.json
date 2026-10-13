@@ -15,6 +15,13 @@
         "xml格式化",
         "格式化xml"
       ]
+    },
+    {
+      "code": "xml-format-file",
+      "explain": "格式化 XML 文件",
+      "type": "files",
+      "fileType": "file",
+      "match": "/\\.(xml|xsd|xsl|xslt|svg|rss|plist)$/i"
     }
   ]
 }
