@@ -1,4 +1,10 @@
 {
+  "name": "xml-format",
+  "pluginName": "XML 格式化",
+  "description": "XML 格式化、压缩、折叠、搜索与 JSON 双向互转工具",
+  "author": "lijunxiang01",
+  "homepage": "https://github.com/2952434/xml-formatting",
+  "version": "1.0.0",
   "main": "index.html",
   "preload": "preload/services.js",
   "logo": "logo1.png",
@@ -18,10 +24,17 @@
     },
     {
       "code": "xml-format-file",
-      "explain": "格式化 XML 文件",
-      "type": "files",
-      "fileType": "file",
-      "match": "/\\.(xml|xsd|xsl|xslt|svg|rss|plist)$/i"
+      "explain": "格式化选中的 XML 文件",
+      "cmds": [
+        {
+          "type": "files",
+          "label": "格式化 XML 文件",
+          "fileType": "file",
+          "match": "/\\.(xml|xsd|xsl|xslt|svg|rss|plist)$/i",
+          "minLength": 1,
+          "maxLength": 20
+        }
+      ]
     }
   ]
 }
