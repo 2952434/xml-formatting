@@ -264,7 +264,7 @@ export default function App () {
   const [depth, setDepth] = useState('2')
   const [options, setOptions] = useState(readOptions)
   const [viewMode, setViewMode] = useState('tree')
-  const [copied, setCopied] = useState(false)
+  const [copyNotice, setCopyNotice] = useState(null)
   const [notice, setNotice] = useState('')
   const [dragActive, setDragActive] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -273,6 +273,7 @@ export default function App () {
   const hasEditedRef = useRef(false)
   const skipNextSaveRef = useRef(false)
   const noticeTimerRef = useRef(0)
+  const copyNoticeTimerRef = useRef(0)
   const viewerBodyRef = useRef(null)
 
   const showNotice = useCallback((message) => {
@@ -284,7 +285,16 @@ export default function App () {
     }
   }, [])
 
-  useEffect(() => () => window.clearTimeout(noticeTimerRef.current), [])
+  const showCopyNotice = useCallback((message, success = true) => {
+    window.clearTimeout(copyNoticeTimerRef.current)
+    setCopyNotice({ message, success })
+    copyNoticeTimerRef.current = window.setTimeout(() => setCopyNotice(null), 2200)
+  }, [])
+
+  useEffect(() => () => {
+    window.clearTimeout(noticeTimerRef.current)
+    window.clearTimeout(copyNoticeTimerRef.current)
+  }, [])
 
   useEffect(() => {
     writeOptions(options)
@@ -406,8 +416,11 @@ export default function App () {
   const copyNodeText = async (text) => {
     // 空节点值也允许复制，清空剪贴板便于提取字段。
     if (text === '') {
-      try { await navigator.clipboard.writeText(''); showNotice('已复制空值') } catch { showNotice('复制失败') }
-    } else showNotice(await copyText(text) ? '已复制' : '复制失败，请手动复制')
+      try { await navigator.clipboard.writeText(''); showCopyNotice('已复制空值') } catch { showCopyNotice('复制失败', false) }
+    } else {
+      const success = await copyText(text)
+      showCopyNotice(success ? '已复制' : '复制失败，请手动复制', success)
+    }
   }
 
   const locateNode = (node) => {
@@ -446,12 +459,11 @@ export default function App () {
     if (!outputText) return
 
     if (await copyText(outputText)) {
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1200)
+      showCopyNotice('已复制')
       return
     }
 
-    showNotice('复制失败，请手动选中内容后复制')
+    showCopyNotice('复制失败，请手动选中内容后复制', false)
   }
 
   const handleOpenFile = async () => {
@@ -612,6 +624,12 @@ export default function App () {
       </section>
 
       {notice && <div className='notice-bar'>{notice}</div>}
+      {copyNotice && (
+        <div className={`copy-toast${copyNotice.success ? '' : ' is-error'}`} role='status' aria-live='polite'>
+          <span className='copy-toast-icon' aria-hidden='true'>{copyNotice.success ? '✓' : '!'}</span>
+          <span>{copyNotice.message}</span>
+        </div>
+      )}
 
       <section
         className='workspace'
@@ -684,7 +702,7 @@ export default function App () {
             </div>
             <div className='viewer-tools'>
               <button className='copy-output-button' onClick={handleCopy} disabled={!outputText}>
-                {copied ? '已复制' : '复制'}
+                复制
               </button>
               <button className='ghost-button' onClick={handleClear}>清空</button>
             </div>

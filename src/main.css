@@ -987,3 +987,54 @@ textarea.code-input::placeholder {
 .diff-after {
   background: #edf9ef;
 }
+
+
+.copy-toast {
+  position: fixed;
+  top: 24px;
+  left: 50%;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: calc(100vw - 32px);
+  padding: 12px 18px;
+  border: 1px solid #badfcb;
+  border-radius: 10px;
+  background: #fff;
+  color: #236745;
+  box-shadow: 0 6px 24px rgba(30, 45, 62, 0.16);
+  transform: translateX(-50%);
+  pointer-events: none;
+  font-size: 14px;
+  animation: copy-toast-enter 0.18s ease-out;
+}
+
+.copy-toast-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #e4f4ea;
+  font-weight: 600;
+}
+
+.copy-toast.is-error {
+  border-color: #efb9b9;
+  color: #9f1f1f;
+}
+
+.copy-toast.is-error .copy-toast-icon {
+  background: #ffeaea;
+}
+
+@keyframes copy-toast-enter {
+  from { opacity: 0; transform: translate(-50%, -6px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .copy-toast { animation: none; }
+}
