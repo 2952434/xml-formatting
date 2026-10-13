@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import XmlTree from './XmlTree.jsx'
+import CodeEditor from './CodeEditor.jsx'
+import XPathPanel from './XPathPanel.jsx'
+import XmlCompare from './XmlCompare.jsx'
 import {
   DEFAULT_FORMAT_OPTIONS,
   INDENT_UNITS,
@@ -7,6 +10,9 @@ import {
   collectMatches,
   formatXml,
   getHistorySignature,
+  getNodeXPath,
+  getTreeNodeEntries,
+  serializeXmlNode,
   getStats,
   getSuggestedFileName,
   getTreeChildren,
@@ -38,7 +44,9 @@ const ACCEPT_EXTENSIONS = FILE_EXTENSIONS.map((ext) => `.${ext}`).join(',')
 const VIEW_MODES = [
   { key: 'tree', label: '树视图' },
   { key: 'source', label: '源码' },
-  { key: 'json', label: 'JSON' }
+  { key: 'json', label: 'JSON' },
+  { key: 'xpath', label: 'XPath' },
+  { key: 'compare', label: '对比' }
 ]
 
 function isUtoolsReady () {
@@ -252,6 +260,8 @@ export default function App () {
   const [query, setQuery] = useState('')
   const [activeMatchIndex, setActiveMatchIndex] = useState(-1)
   const [collapsed, setCollapsed] = useState(new Set())
+  const [selectedPath, setSelectedPath] = useState('')
+  const [depth, setDepth] = useState('2')
   const [options, setOptions] = useState(readOptions)
   const [viewMode, setViewMode] = useState('tree')
   const [copied, setCopied] = useState(false)
@@ -382,7 +392,38 @@ export default function App () {
     return collectMatches(parsed.doc.documentElement, query.trim())
   }, [parsed.doc, query])
 
-  const activeMatchPath = search.matchPaths[activeMatchIndex] || ''
+  const entries = useMemo(() => getTreeNodeEntries(parsed.doc?.documentElement), [parsed.doc])
+  const selectedNode = entries.find((entry) => entry.path === selectedPath)?.node
+  const activeMatchPath = selectedPath || search.matchPaths[activeMatchIndex] || ''
+  const expandedPaths = useMemo(() => {
+    const paths = new Set(search.ancestors)
+    selectedPath.split('.').slice(0, -1).forEach((_, index, parts) => paths.add(parts.slice(0, index + 1).join('.')))
+    return paths
+  }, [search.ancestors, selectedPath])
+
+  useEffect(() => { setSelectedPath('') }, [input])
+
+  const copyNodeText = async (text) => {
+    // 空节点值也允许复制，清空剪贴板便于提取字段。
+    if (text === '') {
+      try { await navigator.clipboard.writeText(''); showNotice('已复制空值') } catch { showNotice('复制失败') }
+    } else showNotice(await copyText(text) ? '已复制' : '复制失败，请手动复制')
+  }
+
+  const locateNode = (node) => {
+    let target = node.nodeType === 2 ? node.ownerElement : node.nodeType === 9 ? node.documentElement : node
+    while (target && !entries.some((entry) => entry.node === target)) target = target.parentNode
+    const entry = entries.find((entry) => entry.node === target)
+    if (!entry) { showNotice('此节点不在树视图中展示，可复制查询结果'); return }
+    setSelectedPath(entry.path)
+    setViewMode('tree')
+  }
+
+  const foldToDepth = () => {
+    setSelectedPath('')
+    setQuery('')
+    setCollapsed(new Set(entries.filter(({ node, path }) => canCollapseNode(node) && path.split('.').length >= Number(depth)).map(({ path }) => path)))
+  }
 
   useEffect(() => {
     setActiveMatchIndex(query.trim() && search.matchPaths.length ? 0 : -1)
@@ -394,11 +435,11 @@ export default function App () {
     viewerBodyRef.current
       ?.querySelector(`[data-node-path="${activeMatchPath}"]`)
       ?.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'smooth' })
-  }, [activeMatchPath])
+  }, [activeMatchPath, viewMode])
 
   const stats = useMemo(() => getStats(parsed.doc), [parsed.doc])
 
-  const outputText = viewMode === 'json' ? conversion.output : formatted
+  const outputText = viewMode === 'json' ? conversion.output : ['xpath', 'compare'].includes(viewMode) ? '' : formatted
   const saveContent = formatted || (conversion.direction === 'json-to-xml' ? conversion.output : '')
 
   const handleCopy = async () => {
@@ -450,9 +491,9 @@ export default function App () {
     setCollapsed(new Set())
   }
 
-  const handleInputChange = (event) => {
+  const handleInputChange = (value) => {
     hasEditedRef.current = true
-    setInput(event.target.value)
+    setInput(value)
   }
 
   const handleRestoreHistory = (item) => {
@@ -485,9 +526,10 @@ export default function App () {
     })
   }
 
-  const handleExpandAll = () => setCollapsed(new Set())
+  const handleExpandAll = () => { setCollapsed(new Set()); setSelectedPath('') }
 
   const moveSearch = (direction) => {
+    setSelectedPath('')
     if (!search.matchPaths.length) return
 
     setActiveMatchIndex((current) => {
@@ -504,6 +546,8 @@ export default function App () {
   }
 
   const handleCollapseAll = () => {
+    setSelectedPath('')
+    setQuery('')
     if (!parsed.doc?.documentElement) return
 
     const next = new Set()
@@ -550,9 +594,9 @@ export default function App () {
     setOptions((current) => ({ ...current, ...patch }))
   }
 
-  const summary = parsed.error
-    ? '解析失败，请检查 XML 结构'
-    : `${stats.nodes} 个节点，${stats.attributes} 个属性`
+  const summary = conversion.direction === 'json-to-xml'
+    ? conversion.error ? 'JSON 转换失败，请检查输入' : 'JSON 输入 · 已转换为 XML'
+    : parsed.error ? '解析失败，请检查 XML 结构' : `${stats.nodes} 个节点，${stats.attributes} 个属性`
 
   return (
     <main className='app-shell'>
@@ -580,12 +624,7 @@ export default function App () {
             <strong>输入</strong>
             <span>{fileName ? `${fileName} · ` : ''}{input.length.toLocaleString()} 字符</span>
           </div>
-          <textarea
-            spellCheck='false'
-            value={input}
-            onChange={handleInputChange}
-            placeholder='在这里粘贴 XML，或把 .xml 文件拖进来'
-          />
+          <CodeEditor value={input} onChange={handleInputChange} errorLine={conversion.direction === 'json-to-xml' ? 0 : parsed.errorLine} errorColumn={parsed.errorColumn} />
           {dragActive && <div className='drop-hint'>松开即可载入文件</div>}
           <div className='history-bar'>
             <button className='ghost-button' onClick={() => setHistoryOpen((value) => !value)}>
@@ -651,7 +690,7 @@ export default function App () {
             </div>
           </div>
 
-          <div className='options-bar'>
+          <div className='options-bar' hidden={['xpath', 'compare'].includes(viewMode)}>
             <label>
               缩进
               <select
@@ -692,7 +731,7 @@ export default function App () {
               <div className='search-box'>
                 <input
                   value={query}
-                  onChange={(event) => setQuery(event.target.value)}
+                  onChange={(event) => { setQuery(event.target.value); setSelectedPath('') }}
                   onKeyDown={handleSearchKeyDown}
                   placeholder='搜索标签、属性、文本'
                   disabled={!parsed.doc}
@@ -719,11 +758,27 @@ export default function App () {
                   </button>
                 </div>
               </div>
+              <select aria-label='展开层级' value={depth} onChange={(event) => setDepth(event.target.value)}>
+                {[1, 2, 3, 4, 5].map((level) => <option key={level} value={level}>{level} 层</option>)}
+              </select>
+              <button className='ghost-button' onClick={foldToDepth} disabled={!parsed.doc}>按层展开</button>
               <button className='ghost-button' onClick={handleExpandAll} disabled={!parsed.doc}>全部展开</button>
               <button className='ghost-button' onClick={handleCollapseAll} disabled={!parsed.doc}>全部折叠</button>
             </div>
           )}
 
+          {viewMode === 'tree' && selectedNode && (
+            <div className='node-actions'>
+              <strong>已选：{selectedNode.nodeName}</strong>
+              <button className='ghost-button' onClick={() => copyNodeText(serializeXmlNode(selectedNode))}>复制节点 XML</button>
+              <button className='ghost-button' onClick={() => copyNodeText(selectedNode.textContent)}>复制节点值</button>
+              <button className='ghost-button' onClick={() => copyNodeText(getNodeXPath(selectedNode))}>复制 XPath</button>
+              {Array.from(selectedNode.attributes || []).map((attr) => (
+                <button key={attr.name} className='ghost-button' onClick={() => copyNodeText(attr.value)} title={attr.value}>复制 @{attr.name}</button>
+              ))}
+              <button className='ghost-button' onClick={() => setSelectedPath('')}>取消选择</button>
+            </div>
+          )}
           <div className='viewer-body' ref={viewerBodyRef}>
             {viewMode === 'tree' && (
               <>
@@ -741,14 +796,18 @@ export default function App () {
                     collapsed={collapsed}
                     matches={search.matches}
                     activeMatchPath={activeMatchPath}
-                    expandedBySearch={search.ancestors}
+                    expandedBySearch={expandedPaths}
                     query={query.trim()}
                     onToggle={handleToggle}
+                    onSelect={setSelectedPath}
                   />
                 )}
                 {!parsed.error && !input.trim() && <div className='empty-box'>等待 XML 输入</div>}
               </>
             )}
+
+            <div hidden={viewMode !== 'xpath'}><XPathPanel doc={parsed.doc} onLocate={locateNode} onCopy={copyNodeText} /></div>
+            <div className='compare-container' hidden={viewMode !== 'compare'}><XmlCompare source={input} active={viewMode === 'compare'} /></div>
 
             {viewMode === 'source' && (
               formatted

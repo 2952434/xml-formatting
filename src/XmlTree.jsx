@@ -131,9 +131,17 @@ function XmlNode ({ node, path, collapsed, matches, activeMatchPath, expandedByS
   )
 }
 
-export default function XmlTree ({ root, collapsed, matches, activeMatchPath, expandedBySearch, query, onToggle }) {
+export default function XmlTree ({ root, collapsed, matches, activeMatchPath, expandedBySearch, query, onToggle, onSelect }) {
   return (
-    <div className='xml-tree'>
+    <div
+      className='xml-tree' onClick={(event) => {
+        const row = event.target.closest('[data-node-path]')
+        if (row) onSelect(row.dataset.nodePath)
+      }} onContextMenu={(event) => {
+        const row = event.target.closest('[data-node-path]')
+        if (row) { event.preventDefault(); onSelect(row.dataset.nodePath) }
+      }}
+    >
       <XmlNode
         node={root}
         path='0'

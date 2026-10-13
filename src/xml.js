@@ -34,9 +34,9 @@ export function normalizeOptions (options) {
 }
 
 export function parseXml (value) {
-  const source = String(value || '').trim()
+  const source = String(value || '')
 
-  if (!source) {
+  if (!source.trim()) {
     return { doc: null, error: '', errorLine: 0, errorColumn: 0 }
   }
 
@@ -451,4 +451,149 @@ export function jsonToXml (value, options) {
   if (!output) return { error: '生成的 XML 无法解析，请检查 JSON 字段名是否合法', output: '' }
 
   return { error: '', output }
+}
+
+/** 可直接执行的 XPath 使用 local-name + namespace-uri，避免依赖文档前缀。 */
+export function getNodeXPath (node) {
+  if (!node || node.nodeType === 9) return ''
+  if (node.nodeType === 2) return `${getNodeXPath(node.ownerElement)}/@${xpathNameTest(node)}`
+  const parent = getNodeXPath(node.parentNode)
+  const test = node.nodeType === 1
+    ? xpathNameTest(node)
+    : node.nodeType === 8 ? 'comment()' : node.nodeType === 7 ? 'processing-instruction()' : 'text()'
+  const siblings = Array.from(node.parentNode?.childNodes || []).filter((item) => (
+    node.nodeType === 1
+      ? item.nodeType === 1 && item.localName === node.localName && item.namespaceURI === node.namespaceURI
+      : (node.nodeType === 3 || node.nodeType === 4) ? item.nodeType === 3 || item.nodeType === 4 : item.nodeType === node.nodeType
+  ))
+  return `${parent}/${test}[${siblings.indexOf(node) + 1}]`
+}
+
+function xpathNameTest (node) {
+  // 某些浏览器的 XPath 引擎将无命名空间视为空值，使用 not() 兼容处理。
+  const namespace = node.namespaceURI ? `namespace-uri()=${xpathLiteral(node.namespaceURI)}` : 'not(namespace-uri())'
+  return `*[local-name()=${xpathLiteral(node.localName)} and ${namespace}]`
+}
+
+function xpathLiteral (value) {
+  if (!value.includes("'")) return `'${value}'`
+  if (!value.includes('"')) return `"${value}"`
+  return `concat(${value.split("'").map((part) => `'${part}'`).join(', "\'", ')})`
+}
+
+export function serializeXmlNode (node) {
+  return node ? new window.XMLSerializer().serializeToString(node) : ''
+}
+
+export function getTreeNodeEntries (root) {
+  const entries = []
+  const walk = (node, path) => {
+    entries.push({ node, path })
+    if (!isInlineElement(node)) getTreeChildren(node).forEach((child, index) => walk(child, `${path}.${index}`))
+  }
+  if (root) walk(root, '0')
+  return entries
+}
+
+export function getDocumentNamespaces (doc) {
+  const namespaces = new Map()
+  Array.from(doc?.getElementsByTagName('*') || []).forEach((node) => {
+    Array.from(node.attributes).forEach((attr) => {
+      if (attr.name === 'xmlns') namespaces.set('default', attr.value)
+      else if (attr.prefix === 'xmlns') namespaces.set(attr.localName, attr.value)
+    })
+  })
+  return Array.from(namespaces, ([prefix, uri]) => `${prefix}=${uri}`).join('\n')
+}
+
+export function queryXPath (doc, expression, namespaceText = '') {
+  if (!doc || !expression.trim()) return { error: '请输入 XPath 表达式', nodes: [], value: '' }
+  try {
+    const namespaces = new Map([['xml', 'http://www.w3.org/XML/1998/namespace']])
+    namespaceText.split('\n').filter((line) => line.trim()).forEach((line) => {
+      const separator = line.indexOf('=')
+      if (separator < 1 || !line.slice(separator + 1).trim()) throw new Error('命名空间格式应为 prefix=URI，每行一项')
+      namespaces.set(line.slice(0, separator).trim(), line.slice(separator + 1).trim())
+    })
+    const result = doc.evaluate(expression, doc, (prefix) => namespaces.get(prefix) || null, window.XPathResult.ANY_TYPE, null)
+    if (result.resultType === 1) return { error: '', nodes: [], value: String(result.numberValue), type: 'value' }
+    if (result.resultType === 2) return { error: '', nodes: [], value: result.stringValue, type: 'value' }
+    if (result.resultType === 3) return { error: '', nodes: [], value: String(result.booleanValue), type: 'value' }
+    const nodes = []
+    let node = result.iterateNext()
+    while (node) {
+      nodes.push(node)
+      node = result.iterateNext()
+    }
+    return { error: '', nodes, value: '', type: 'nodes' }
+  } catch (error) {
+    return { error: `XPath 查询失败：${error.message}`, nodes: [], value: '' }
+  }
+}
+
+/** 按子节点位置比较，保持顺序；仅忽略元素容器中的缩进空白。 */
+export function compareXml (left, right, options = {}) {
+  const before = parseXml(left)
+  const after = parseXml(right)
+  if (before.error || after.error || !before.doc || !after.doc) {
+    return { error: before.error ? `左侧 XML：${before.error}` : after.error ? `右侧 XML：${after.error}` : '请在两侧输入有效 XML', differences: [] }
+  }
+  const differences = []
+  const add = (type, path, oldValue, newValue) => differences.push({ type, path, before: oldValue, after: newValue })
+  const children = (node) => {
+    const all = Array.from(node.childNodes)
+    let preserve = false
+    for (let ancestor = node; ancestor?.nodeType === 1; ancestor = ancestor.parentNode) {
+      const space = ancestor.getAttributeNS('http://www.w3.org/XML/1998/namespace', 'space')
+      if (space === 'preserve' || space === 'default') { preserve = space === 'preserve'; break }
+    }
+    const mixed = all.some((child) => child.nodeType === 3 && child.textContent.trim()) || all.some((child) => child.nodeType === 4)
+    const container = node.nodeType === 9 || all.some((child) => child.nodeType === 1)
+    return options.ignoreWhitespace && container && !preserve && !mixed
+      ? all.filter((child) => child.nodeType !== 3 || child.textContent.trim())
+      : all
+  }
+  const walk = (a, b, path) => {
+    if (!a || !b) {
+      add(a ? '删除' : '新增', path, serializeXmlNode(a), serializeXmlNode(b))
+      return
+    }
+    if (a.nodeType !== b.nodeType || a.nodeName !== b.nodeName || a.namespaceURI !== b.namespaceURI) {
+      add('节点变化', path, serializeXmlNode(a), serializeXmlNode(b))
+      return
+    }
+    if (a.nodeType !== 1 && a.nodeType !== 9) {
+      if (serializeXmlNode(a) !== serializeXmlNode(b)) add('内容变化', path, serializeXmlNode(a), serializeXmlNode(b))
+      return
+    }
+    if (a.nodeType === 1) {
+      const attrsA = Array.from(a.attributes)
+      const attrsB = Array.from(b.attributes)
+      const names = new Set([...attrsA, ...attrsB].map((attr) => attr.name))
+      names.forEach((name) => {
+        if (a.getAttribute(name) !== b.getAttribute(name)) add('属性变化', `${path}/@${name}`, a.getAttribute(name) ?? '（不存在）', b.getAttribute(name) ?? '（不存在）')
+      })
+      if (!options.ignoreAttributeOrder && attrsA.length === attrsB.length && attrsA.every((attr) => b.hasAttribute(attr.name)) && attrsA.map((attr) => attr.name).join(' ') !== attrsB.map((attr) => attr.name).join(' ')) {
+        add('属性顺序', path, attrsA.map((attr) => attr.name).join(' '), attrsB.map((attr) => attr.name).join(' '))
+      }
+    }
+    const ca = children(a)
+    const cb = children(b)
+    const childPaths = (nodes) => {
+      const counts = new Map()
+      return nodes.map((node) => {
+        const name = node.nodeType === 3 || node.nodeType === 4 ? 'text()' : node.nodeType === 8 ? 'comment()' : node.nodeType === 7 ? 'processing-instruction()' : node.nodeName
+        const count = (counts.get(name) || 0) + 1
+        counts.set(name, count)
+        return `${path}/${name}[${count}]`
+      })
+    }
+    const pathsA = childPaths(ca)
+    const pathsB = childPaths(cb)
+    for (let i = 0; i < Math.max(ca.length, cb.length); i++) {
+      walk(ca[i], cb[i], pathsA[i] || pathsB[i])
+    }
+  }
+  walk(before.doc, after.doc, '')
+  return { error: '', differences }
 }
